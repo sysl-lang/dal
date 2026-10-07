@@ -1,0 +1,117 @@
+module sh.sysl.dal
+
+import sysl.buf.byte_sink
+import sysl.math.Float
+import sysl.math.bigint as big
+import sysl.math.rational as q
+import sysl.text.{from_utf8, parse_real}
+
+/** `n` written so that it reads back: an integer in decimal, a fraction as `n/d`, and a double as the
+ * shortest decimal that reads back as the same double, with a `.0` wherever the digits alone would
+ * read back as an integer -- `1.0`, `1.0e+23`, `-0.0`. A non-finite double is `inf`, `-inf` or `nan`.
+ */
+to_string(n: Number) -> string = n match
+    Int(v) -> str(v)
+    Big(v) -> big.to_string(v)
+    Rat(r) -> q.to_string(r)
+    Real(x) -> real_text(x)
+
+impl Display for Number
+    display(self, out: *Writer, fmt: FormatSpec) = display_str(to_string(self), out, fmt)
+
+// A double's text. The digits are the standard library's shortest round trip; the `.0` is this
+// package's, because `Real(1.0)` reading back as `Int(1)` would make a round trip change the kind.
+private real_text(x: real) -> string
+    if x.is_nan() then return "nan"
+    if x.is_infinite() then return if x > 0.0 then "inf" else "-inf"
+
+    var sink = byte_sink()
+
+    display_real_shortest(x, &sink, FormatSpec(0, -1, false))
+
+    val t = from_utf8(sink.text()).unwrap()
+    val bs = t.bytes
+
+    for i in 0..<bs.len
+        if bs[i] == u8('.') then return t
+        if bs[i] == u8('e') then return t[0..<i] + ".0" + t[i..<bs.len]
+
+    t + ".0"
+end real_text
+
+// `parse`. The grammar is the README's: a sign, then digits, digits `/` digits, digits with a
+// fraction or an exponent, or `inf` or `nan`.
+private[dal] read(p: Policy, s: string) -> Result[Number, NumberError]
+    val bs = s.bytes
+    var i: usize = 0
+
+    if i < bs.len && (bs[i] == u8('+') || bs[i] == u8('-')) then i += 1
+
+    val body = s[i..<bs.len]
+
+    if body == "inf" then return p.admit(Real(if bs[0] == u8('-') then -real.infinity() else real.infinity()))
+    if body == "nan" then return p.admit(Real(real.nan()))
+
+    val start = i
+
+    i = digits(bs, i)
+
+    if i == start then return Err(Syntax)
+
+    if i == bs.len then return integer(p, s)
+
+    if bs[i] == u8('/')
+        val after = i + 1
+        val stop = digits(bs, after)
+
+        if stop == after || stop != bs.len then return Err(Syntax)
+
+        val num = big.parse(s[0..<i]).unwrap()
+        val den = big.parse(s[after..<bs.len]).unwrap()
+
+        return q.checked_of(num, den) match
+            Some(r) -> p.admit(Rat(r))
+            None -> Err(DivisionByZero)
+
+    var fraction = false
+
+    if bs[i] == u8('.')
+        val after = i + 1
+
+        i = digits(bs, after)
+        if i == after then return Err(Syntax)
+        fraction = true
+
+    if i < bs.len && (bs[i] == u8('e') || bs[i] == u8('E'))
+        i += 1
+        if i < bs.len && (bs[i] == u8('+') || bs[i] == u8('-')) then i += 1
+
+        val after = i
+
+        i = digits(bs, after)
+        if i == after then return Err(Syntax)
+        fraction = true
+
+    if i != bs.len || !fraction then return Err(Syntax)
+
+    parse_real(s) match
+        Ok(x) -> p.admit(Real(x))
+        Err(_) -> Err(Syntax)
+end read
+
+// Where the run of ASCII digits starting at `i` ends.
+private digits(bs: []const u8, from: usize) -> usize
+    var i = from
+
+    while i < bs.len && bs[i] >= u8('0') && bs[i] <= u8('9') do i += 1
+
+    i
+
+// An integer literal, already checked to be a sign and digits: an `Int` wherever it fits, as a
+// literal is not a value leaving a larger kind.
+private integer(p: Policy, s: string) -> Result[Number, NumberError]
+    val v = big.parse(s).unwrap()
+
+    v.to_long() match
+        Some(n) -> Ok(Int(n))
+        None -> p.admit(Big(v))

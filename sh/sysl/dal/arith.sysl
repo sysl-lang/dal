@@ -1,0 +1,234 @@
+module sh.sysl.dal
+
+import sysl.math.{Float, checked_add, checked_mul, checked_sub}
+import sysl.math.bigint.BigInt
+import sysl.math.bigint as big
+import sysl.math.rational.Rational
+import sysl.math.rational as q
+
+// The arithmetic behind `Policy`'s methods.
+//
+// **Every binary operation has the same shape**: find the lane -- the one kind both operands are
+// carried into -- do the operation there, and hand the answer to the policy. The lane is where the
+// promotion half of the tower lives and `settled` is where the demotion half does, so each operation
+// below is only what that operation means in each of four kinds.
+
+// Two operands carried into the kind an operation on them runs in.
+private enum Lane
+    Ints(a: long, b: long)
+    Bigs(a: BigInt, b: BigInt)
+    Rats(a: Rational, b: Rational)
+    Reals(a: real, b: real)
+
+// The higher of the two operands' kinds. An exact operand meets a `Real` by becoming the nearest
+// double, which is the one promotion a policy may refuse.
+private lane(p: Policy, a: Number, b: Number) -> Result[Lane, NumberError] = (a, b) match
+    (Int(x), Int(y)) -> Ok(Ints(x, y))
+    (Real(x), Real(y)) -> Ok(Reals(x, y))
+    (Real(_), _) -> floated(p, a, b)
+    (_, Real(_)) -> floated(p, a, b)
+    (Rat(_), _) -> Ok(Rats(exact(a), exact(b)))
+    (_, Rat(_)) -> Ok(Rats(exact(a), exact(b)))
+    _ -> Ok(Bigs(whole(a), whole(b)))
+
+private floated(p: Policy, a: Number, b: Number) -> Result[Lane, NumberError] =
+    if p.mixing then Ok(Reals(to_real(a), to_real(b))) else Err(MixedKinds)
+
+// An integer computed in `BigInt` from operands that were `Int`s: an `Int` again wherever it fits,
+// whatever `demote` says, since `demote` is about a value leaving a kind it was already in.
+private grown(p: Policy, v: BigInt) -> Result[Number, NumberError] = v.to_long() match
+    Some(n) -> Ok(Int(n))
+    None -> p.admit(Big(v))
+
+private[dal] sum(p: Policy, a: Number, b: Number) -> Result[Number, NumberError] = lane(p, a, b)? match
+    Ints(x, y) -> checked_add(x, y) match
+        Some(s) -> Ok(Int(s))
+        None -> grown(p, big.add(big.from_int(x), big.from_int(y)))
+    Bigs(x, y) -> p.admit(Big(big.add(x, y)))
+    Rats(x, y) -> p.admit(Rat(q.add(x, y)))
+    Reals(x, y) -> p.admit(Real(x + y))
+
+private[dal] difference(p: Policy, a: Number, b: Number) -> Result[Number, NumberError] = lane(p, a, b)? match
+    Ints(x, y) -> checked_sub(x, y) match
+        Some(s) -> Ok(Int(s))
+        None -> grown(p, big.sub(big.from_int(x), big.from_int(y)))
+    Bigs(x, y) -> p.admit(Big(big.sub(x, y)))
+    Rats(x, y) -> p.admit(Rat(q.sub(x, y)))
+    Reals(x, y) -> p.admit(Real(x - y))
+
+private[dal] product(p: Policy, a: Number, b: Number) -> Result[Number, NumberError] = lane(p, a, b)? match
+    Ints(x, y) -> checked_mul(x, y) match
+        Some(s) -> Ok(Int(s))
+        None -> grown(p, big.mul(big.from_int(x), big.from_int(y)))
+    Bigs(x, y) -> p.admit(Big(big.mul(x, y)))
+    Rats(x, y) -> p.admit(Rat(q.mul(x, y)))
+    Reals(x, y) -> p.admit(Real(x * y))
+
+// `/`. A zero divisor is refused in every exact lane; in the float lane it is refused unless the
+// policy wants IEEE's infinities.
+private[dal] quotient(p: Policy, a: Number, b: Number) -> Result[Number, NumberError] = lane(p, a, b)? match
+    Reals(x, y) -> if y == 0.0 && !p.ieee then Err(DivisionByZero) else p.admit(Real(x / y))
+    Rats(x, y) -> if y.is_zero() then Err(DivisionByZero) else p.admit(Rat(q.div(x, y)))
+    Ints(x, y) -> if y == 0 then Err(DivisionByZero) else integers_divided(p, a, b, true)
+    Bigs(x, y) -> if y.is_zero() then Err(DivisionByZero) else integers_divided(p, a, b, false)
+
+// Two integers divided as the policy's `division` says. `small` is whether both were `Int`s, which
+// decides the kind a quotient that divides comes back in.
+private integers_divided(p: Policy, a: Number, b: Number, small: bool) -> Result[Number, NumberError]
+    val r = q.of(whole(a), whole(b))
+
+    p.division match
+        Truncate -> divided(p, a, b, false, false)
+        Floor -> divided(p, a, b, true, false)
+        ToFloat -> p.admit(Real(q.to_real(r)))
+        IntOrFloat ->
+            if !r.is_integer() then p.admit(Real(q.to_real(r)))
+            elif small then grown(p, r.numerator())
+            else p.admit(Big(r.numerator()))
+        Exact ->
+            if !r.is_integer() then p.admit(Rat(r))
+            elif small then grown(p, r.numerator())
+            else p.admit(Big(r.numerator()))
+end integers_divided
+
+// An exact integer: what `integral` asks of the integer-division family. A whole `Real` is not one.
+private exact_integer(n: Number) -> bool = is_exact(n) && is_integer(n)
+
+// The integer-division family. `floor` picks rounding toward negative infinity over rounding toward
+// zero, and `remainder` picks the remainder over the quotient; `a == b * quotient + remainder` holds
+// for all four in every exact lane.
+private[dal] divided(p: Policy, a: Number, b: Number, floor: bool, remainder: bool) -> Result[Number, NumberError]
+    if p.integral && (!exact_integer(a) || !exact_integer(b)) then return Err(NotAnInteger)
+
+    lane(p, a, b)? match
+        Ints(x, y) ->
+            if y == 0 then return Err(DivisionByZero)
+
+            // `long.min / -1` is the one quotient a `long` cannot hold, and `long.min % -1` traps on
+            // most processors though its answer is zero; dividing by -1 is a negation either way.
+            if y == -1 then return if remainder then Ok(Int(0)) else negated(p, a)
+
+            var qt = x / y
+            var rt = x % y
+
+            if floor && rt != 0 && (rt < 0) != (y < 0)
+                qt -= 1
+                rt += y
+
+            Ok(Int(if remainder then rt else qt))
+        Bigs(x, y) ->
+            if y.is_zero() then return Err(DivisionByZero)
+
+            val (qt, rt) = if floor then big.div_rem_floor(x, y) else big.div_rem(x, y)
+
+            p.admit(Big(if remainder then rt else qt))
+        Rats(x, y) ->
+            if y.is_zero() then return Err(DivisionByZero)
+
+            val ratio = q.div(x, y)
+            val qt = if floor then q.floor(ratio) else q.trunc(ratio)
+
+            if remainder then p.admit(Rat(q.sub(x, q.mul(y, q.from_big(qt))))) else p.admit(Big(qt))
+        Reals(x, y) ->
+            if y == 0.0 then return Err(DivisionByZero)
+
+            // `fmod` is exact, so the remainder is too; `x - r` is then an exact multiple of `y` and
+            // the division only has to round once, to the nearest whole double.
+            var rt = x.fmod(y)
+            var qt = ((x - rt) / y).round()
+
+            if floor && rt != 0.0 && (rt < 0.0) != (y < 0.0)
+                rt += y
+                qt -= 1.0
+
+            p.admit(Real(if remainder then rt else qt))
+end divided
+
+private[dal] negated(p: Policy, a: Number) -> Result[Number, NumberError] = a match
+    Int(v) -> checked_sub(0, v) match
+        Some(n) -> Ok(Int(n))
+        None -> grown(p, big.negate(big.from_int(v)))
+    Big(v) -> p.admit(Big(big.negate(v)))
+    Rat(r) -> p.admit(Rat(q.negate(r)))
+    Real(x) -> p.admit(Real(-x))
+
+private[dal] magnitude(p: Policy, a: Number) -> Result[Number, NumberError] = a match
+    Int(v) -> if v < 0 then negated(p, a) else Ok(a)
+    Big(v) -> p.admit(Big(big.abs(v)))
+    Rat(r) -> p.admit(Rat(q.abs(r)))
+    Real(x) -> p.admit(Real(x.abs()))
+
+// The largest power this computes, in bits of the result: 2^26 bits is eight megabytes of digits,
+// past which an exact power is a program's mistake rather than its intent.
+private const most_bits: long = 67108864
+
+// An integer exponent, of any exact kind.
+private exponent_of(e: Number) -> Result[BigInt, NumberError] = e match
+    Int(v) -> Ok(big.from_int(v))
+    Big(v) -> Ok(v)
+    Rat(r) -> if r.is_integer() then Ok(r.numerator()) else Err(NotAnInteger)
+    Real(_) -> Err(NotAnInteger)
+
+private[dal] power(p: Policy, base: Number, exponent: Number) -> Result[Number, NumberError] = base match
+    Real(x) -> real_power(p, x, exponent_of(exponent)?)
+    Int(_) -> exact_power(p, base, exponent_of(exponent)?, true)
+    _ -> exact_power(p, base, exponent_of(exponent)?, false)
+
+// A double raised to a count is C's `pow`; the exponent is a count, so `mixing` does not apply.
+private real_power(p: Policy, x: real, e: BigInt) -> Result[Number, NumberError] =
+    if x == 0.0 && e.sign() < 0 && !p.ieee then Err(DivisionByZero)
+    else p.admit(Real(x.pow(big.to_real(e))))
+
+// An exact base to an integer power. `small` is whether the base was an `Int`, which decides the kind
+// an integer result comes back in.
+private exact_power(p: Policy, base: Number, e: BigInt, small: bool) -> Result[Number, NumberError]
+    val r = exact(base)
+
+    if e.is_zero() then return Ok(Int(1))
+
+    if r.is_zero() then return if e.sign() < 0 then Err(DivisionByZero) else p.admit(base)
+
+    // `1` and `-1` to any power are `1` or `-1`, which is the only case an enormous exponent has an
+    // answer in.
+    if r.is_integer() && big.abs(r.numerator()) == big.one()
+        val one: long = if r.sign() < 0 && big.is_odd(e) then -1 else 1
+
+        return Ok(Int(one))
+
+    val n = big.abs(e).to_long() match
+        Some(v) -> v
+        None -> return Err(ExponentTooLarge)
+
+    val num_bits = long(big.bit_length(r.numerator())) - 1
+    val den_bits = long(big.bit_length(r.denominator())) - 1
+    val bits = if num_bits > den_bits then num_bits else den_bits
+
+    if n > most_bits / bits then return Err(ExponentTooLarge)
+
+    val up = big.pow(r.numerator(), usize(n))
+    val down = big.pow(r.denominator(), usize(n))
+
+    if e.sign() < 0 then return p.admit(Rat(q.of(down, up)))
+
+    if !r.is_integer() then p.admit(Rat(q.of(up, down)))
+    elif small then grown(p, up)
+    else p.admit(Big(up))
+end exact_power
+
+// `admit`: a number in the smallest kind the policy allows, or the error saying it has none.
+private[dal] settled(p: Policy, n: Number) -> Result[Number, NumberError] = n match
+    Int(_) -> Ok(n)
+    Big(v) -> v.to_long() match
+        Some(s) -> if p.demote || !p.bigints then Ok(Int(s)) else Ok(n)
+        None -> if p.bigints then Ok(n) else Err(Overflow)
+    Rat(r) ->
+        if r.is_integer() && (p.demote || !p.rationals) then settled(p, Big(r.numerator()))
+        elif !p.rationals then Err(NeedsRational)
+        elif !p.bigints && (!big.fits_long(r.numerator()) || !big.fits_long(r.denominator())) then Err(Overflow)
+        else Ok(n)
+    Real(x) ->
+        if !p.floats then Err(NeedsFloat)
+        elif p.ieee then Ok(n)
+        elif x.is_nan() then Err(Undefined)
+        elif x.is_infinite() then Err(FloatOverflow)
+        else Ok(n)

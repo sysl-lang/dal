@@ -1,0 +1,154 @@
+module sh.sysl.dal
+
+import sysl.math.Float
+import sysl.math.bigint.BigInt
+import sysl.math.bigint as big
+import sysl.math.rational.Rational
+import sysl.math.rational as q
+
+/** A number whose kind is decided at run time.
+ *
+ * **Four kinds, two of them integers.** `Int` is the fast path: a value that fits 64 bits is held
+ * inline and costs one overflow check per operation. `Big` is the same integers without the bound,
+ * `Rat` is an exact fraction in lowest terms, and `Real` is a double -- the one inexact kind.
+ *
+ * A value a caller builds is taken as it is. Every value a `Policy` operation returns has been put
+ * through that policy, so it is in the smallest kind the policy allows.
+ */
+enum Number
+    Int(n: long)
+    Big(n: BigInt)
+    Rat(r: Rational)
+    Real(x: real)
+
+/** Why an operation has no answer under its policy. The README maps each to ISO Prolog's error. */
+enum NumberError
+    DivisionByZero
+    Overflow
+    FloatOverflow
+    Undefined
+    NeedsRational
+    NeedsFloat
+    MixedKinds
+    NotAnInteger
+    ExponentTooLarge
+    Syntax
+
+    /** A sentence saying what went wrong, for a message a person reads. */
+    describe(self) -> string = self match
+        DivisionByZero -> "division by zero"
+        Overflow -> "integer overflow: the result does not fit 64 bits and big integers are off"
+        FloatOverflow -> "float overflow: the result is infinite"
+        Undefined -> "undefined: the result is not a number"
+        NeedsRational -> "the result is a fraction and rationals are off"
+        NeedsFloat -> "the result is a float and floats are off"
+        MixedKinds -> "an exact number cannot meet a float under this policy"
+        NotAnInteger -> "an integer was required"
+        ExponentTooLarge -> "the exponent is too large: the result would pass 2^26 bits"
+        Syntax -> "not a number"
+end NumberError
+
+impl Display for NumberError
+    display(self, out: *Writer, fmt: FormatSpec) = display_str(self.describe(), out, fmt)
+
+/** Whether `n` is one of the three exact kinds. */
+is_exact(n: Number) -> bool = n match
+    Real(_) -> false
+    _ -> true
+
+/** Whether `n` is an integer -- of any kind, so a `Rat` with denominator 1 and a whole `Real` count. */
+is_integer(n: Number) -> bool = n match
+    Int(_) -> true
+    Big(_) -> true
+    Rat(r) -> r.is_integer()
+    Real(x) -> x.is_finite() && x.trunc() == x
+
+/** `-1`, `0` or `1` as `n` is below, at or above zero; `0` for a NaN, which has no sign to give. */
+sign(n: Number) -> int = n match
+    Int(v) -> if v < 0 then -1 elif v > 0 then 1 else 0
+    Big(v) -> v.sign()
+    Rat(r) -> r.sign()
+    Real(x) -> if x < 0.0 then -1 elif x > 0.0 then 1 else 0
+
+/** The nearest double to `n`, ties to even -- correctly rounded for every exact kind, and an infinity
+ * past the largest finite double.
+ */
+to_real(n: Number) -> real = n match
+    Int(v) -> real(v)
+    Big(v) -> big.to_real(v)
+    Rat(r) -> q.to_real(r)
+    Real(x) -> x
+
+/** `n` as a `long`, where it is an integer that fits one. A whole `Real` does not count: this is a
+ * question about the exact value, and a double's integer-ness is a rounding accident.
+ */
+to_long(n: Number) -> Option[long] = n match
+    Int(v) -> Some(v)
+    Big(v) -> v.to_long()
+    Rat(r) -> if r.is_integer() then r.numerator().to_long() else None
+    Real(_) -> None
+
+/** `n`'s exact value as a fraction, for every exact kind; `None` for a `Real`. */
+to_rational(n: Number) -> Option[Rational] = n match
+    Int(v) -> Some(q.from_int(v))
+    Big(v) -> Some(q.from_big(v))
+    Rat(r) -> Some(r)
+    Real(_) -> None
+
+/** How `a` stands against `b`: `Some(-1)`, `Some(0)` or `Some(1)`, and `None` where either is a NaN.
+ *
+ * **Exact across kinds.** A double is compared at its exact binary value, so `1/3` is above
+ * `0.3333333333333333` and `2^53 + 1` is above `2^53` as a double. Neither side is ever rounded.
+ */
+compare(a: Number, b: Number) -> Option[int] = (a, b) match
+    (Real(x), Real(y)) ->
+        if x.is_nan() || y.is_nan() then None
+        elif x < y then Some(-1)
+        elif x > y then Some(1)
+        else Some(0)
+    (Real(x), _) -> q.cmp_real(exact(b), x) match
+        Some(c) -> Some(-c)
+        None -> None
+    (_, Real(y)) -> q.cmp_real(exact(a), y)
+    (Int(x), Int(y)) -> Some(if x < y then -1 elif x > y then 1 else 0)
+    (Rat(_), _) -> Some(q.cmp(exact(a), exact(b)))
+    (_, Rat(_)) -> Some(q.cmp(exact(a), exact(b)))
+    _ -> Some(big.cmp(whole(a), whole(b)))
+
+/** Whether `a` and `b` are the same number, whatever their kinds: `equal(Int(1), Real(1.0))` is true.
+ * A NaN equals nothing.
+ */
+equal(a: Number, b: Number) -> bool = compare(a, b) == Some(0)
+
+less(a: Number, b: Number) -> bool = compare(a, b) == Some(-1)
+
+less_eq(a: Number, b: Number) -> bool = compare(a, b) match
+    Some(c) -> c <= 0
+    None -> false
+
+greater(a: Number, b: Number) -> bool = compare(a, b) == Some(1)
+
+greater_eq(a: Number, b: Number) -> bool = compare(a, b) match
+    Some(c) -> c >= 0
+    None -> false
+
+/** **Identity**, not numeric equality: the same kind holding the same value, so `Int(1)` is not
+ * `Real(1.0)` and `Int(5)` is not `Big(5)`. A NaN is identical to a NaN, and `0.0` to `-0.0`.
+ * `equal` is the numeric question.
+ */
+impl Eq for Number
+    eq(self, rhs: Number) -> bool = (self, rhs) match
+        (Int(x), Int(y)) -> x == y
+        (Big(x), Big(y)) -> x == y
+        (Rat(x), Rat(y)) -> x == y
+        (Real(x), Real(y)) -> x == y || (x.is_nan() && y.is_nan())
+        _ -> false
+
+// The exact value of an exact number, as a fraction. Only reached once a `Real` has been ruled out.
+private[dal] exact(n: Number) -> Rational = to_rational(n).expect("an exact number")
+
+// The integer an `Int` or a `Big` holds. Only reached once both other kinds have been ruled out.
+private[dal] whole(n: Number) -> BigInt = n match
+    Int(v) -> big.from_int(v)
+    Big(v) -> v
+    _ -> panic("an integer kind")

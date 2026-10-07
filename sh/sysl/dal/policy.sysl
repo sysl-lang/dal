@@ -1,0 +1,118 @@
+module sh.sysl.dal
+
+import sysl.math.bigint.BigInt
+import sysl.math.rational.Rational
+
+/** What `/` gives for two integers. A `Rat` or a `Real` operand makes `/` an exact or a float
+ * division whatever this says.
+ */
+enum Division
+    /** The exact quotient: an integer where it divides, else a `Rat`. `7 / 2` is `7/2`. */
+    Exact
+    /** An integer where it divides, else the correctly rounded double. `7 / 2` is `3.5`, `6 / 2` is
+     * `3`. ISO Prolog's `/`.
+     */
+    IntOrFloat
+    /** Always the correctly rounded double. `6 / 2` is `3.0`. */
+    ToFloat
+    /** The integer quotient rounded toward zero. `-7 / 2` is `-3`. */
+    Truncate
+    /** The integer quotient rounded toward negative infinity. `-7 / 2` is `-4`. */
+    Floor
+
+/** Which kinds a tower has and how values move between them -- the whole of what two languages built
+ * on this package may disagree about. The README gives every field's meaning and default.
+ *
+ * **A policy is a plain value**: nothing is checked when one is built, and where two fields
+ * contradict, the narrower one wins at the point of use. Every arithmetic operation is a method here,
+ * because the policy is what decides its answer.
+ *
+ * `policy()` builds one with every field at its default, so a variation names only what it changes:
+ * `policy(division = ToFloat, ieee = true)`.
+ */
+struct Policy
+    /** An integer past 64 bits becomes a `Big`; off, it is `Overflow`. */
+    bigints: bool
+    /** A fraction becomes a `Rat`; off, it is `NeedsRational`. */
+    rationals: bool
+    /** `Real`s exist; off, an operation that would make one is `NeedsFloat`. */
+    floats: bool
+    /** What `/` gives for two integers. */
+    division: Division
+    /** A `Big` that fits 64 bits becomes an `Int`, and a `Rat` with denominator 1 an integer. */
+    demote: bool
+    /** An exact operand meets a `Real` by becoming a double; off, it is `MixedKinds`. */
+    mixing: bool
+    /** A non-finite double is a result; off, it is `FloatOverflow` or `Undefined`, and a float zero
+     * divisor is `DivisionByZero`.
+     */
+    ieee: bool
+    /** The integer-division family refuses anything but an exact integer with `NotAnInteger`. */
+    integral: bool
+
+    /** `a + b`. */
+    add(self, a: Number, b: Number) -> Result[Number, NumberError] = sum(self, a, b)
+
+    /** `a - b`. */
+    sub(self, a: Number, b: Number) -> Result[Number, NumberError] = difference(self, a, b)
+
+    /** `a * b`. */
+    mul(self, a: Number, b: Number) -> Result[Number, NumberError] = product(self, a, b)
+
+    /** `a / b`, two integers divided as `division` says. */
+    div(self, a: Number, b: Number) -> Result[Number, NumberError] = quotient(self, a, b)
+
+    /** The quotient rounded toward zero. */
+    quot(self, a: Number, b: Number) -> Result[Number, NumberError] = divided(self, a, b, false, false)
+
+    /** The remainder of `quot`, which takes the dividend's sign: `a == b * quot(a, b) + rem(a, b)`. */
+    rem(self, a: Number, b: Number) -> Result[Number, NumberError] = divided(self, a, b, false, true)
+
+    /** The quotient rounded toward negative infinity. */
+    floor_div(self, a: Number, b: Number) -> Result[Number, NumberError] = divided(self, a, b, true, false)
+
+    /** The remainder of `floor_div`, which takes the divisor's sign. */
+    modulo(self, a: Number, b: Number) -> Result[Number, NumberError] = divided(self, a, b, true, true)
+
+    /** `-a`. */
+    neg(self, a: Number) -> Result[Number, NumberError] = negated(self, a)
+
+    /** `|a|`. */
+    abs(self, a: Number) -> Result[Number, NumberError] = magnitude(self, a)
+
+    /** `base` raised to an integer `exponent`. */
+    pow(self, base: Number, exponent: Number) -> Result[Number, NumberError] = power(self, base, exponent)
+
+    /** The number `s` spells, under this policy. */
+    parse(self, s: string) -> Result[Number, NumberError] = read(self, s)
+
+    /** A `BigInt` as a `Number`, through this policy: a small one is an `Int`. */
+    of_big(self, n: BigInt) -> Result[Number, NumberError] = self.admit(Big(n))
+
+    /** A `Rational` as a `Number`, through this policy: a whole one is an integer. */
+    of_rational(self, r: Rational) -> Result[Number, NumberError] = self.admit(Rat(r))
+
+    /** `n` in the smallest kind this policy allows, or the error saying the policy has no kind for
+     * it. Every operation's result passes through here.
+     */
+    admit(self, n: Number) -> Result[Number, NumberError] = settled(self, n)
+end Policy
+
+/** A policy, every field at its default unless named: all four kinds, `/` exact, exact results
+ * demoted, an exact operand meeting a double by becoming one, non-finite doubles refused, and the
+ * integer-division family open to every kind.
+ */
+policy(bigints: bool = true, rationals: bool = true, floats: bool = true, division: Division = Exact,
+       demote: bool = true, mixing: bool = true, ieee: bool = false, integral: bool = false) -> Policy =
+    Policy(bigints, rationals, floats, division, demote, mixing, ieee, integral)
+
+/** FunL's tower, which is the defaults: exact until a program asks for inexactness. */
+funl() -> Policy = policy()
+
+/** ISO Prolog's tower. `prefer_rationals` is SWI-Prolog's flag: off, `7 / 2` is `3.5` and there are
+ * no rationals; on, it is `7r2`. Either way the integer-division family wants integers.
+ */
+iso_prolog(prefer_rationals: bool) -> Policy
+    val division = if prefer_rationals then Exact else IntOrFloat
+
+    policy(rationals = prefer_rationals, division = division, integral = true)

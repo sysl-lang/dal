@@ -1,0 +1,732 @@
+module sh.sysl.dal
+@tests
+
+import sysl.math.Float
+import sysl.math.bigint as big
+import sysl.math.rational as q
+
+// What this package claims, run by `sysl test .`.
+//
+// **Every expected value here was worked by hand or is a property of the definition** -- `a == b *
+// quot + rem`, a remainder smaller than its divisor, a parse of a rendering giving the value back --
+// and none was produced by this package and pasted in. Each result is checked as its kind and its
+// text together, `"Int 3"` or `"Rat 7/2"`, because which kind an answer comes back in is half of
+// what a tower is for: `Int 3` and `Big 3` are the same number and only one of them is right.
+
+private const max: long = 9223372036854775807
+private const min: long = -9223372036854775807 - 1
+
+private kind(n: Number) -> string = n match
+    Int(_) -> "Int"
+    Big(_) -> "Big"
+    Rat(_) -> "Rat"
+    Real(_) -> "Real"
+
+private named(e: NumberError) -> string = e match
+    DivisionByZero -> "DivisionByZero"
+    Overflow -> "Overflow"
+    FloatOverflow -> "FloatOverflow"
+    Undefined -> "Undefined"
+    NeedsRational -> "NeedsRational"
+    NeedsFloat -> "NeedsFloat"
+    MixedKinds -> "MixedKinds"
+    NotAnInteger -> "NotAnInteger"
+    ExponentTooLarge -> "ExponentTooLarge"
+    Syntax -> "Syntax"
+
+// A result as its kind and its text, or as the error's name.
+private shown(r: Result[Number, NumberError]) -> string = r match
+    Ok(n) -> kind(n) + " " + to_string(n)
+    Err(e) -> "error " + named(e)
+
+private check(r: Result[Number, NumberError], want: string) = assert_eq(shown(r), want)
+
+// A `Big` built from digits -- deliberately not demoted, so a test can put a small value in the `Big`
+// lane and watch the result come back an `Int`.
+private bigof(digits: string) -> Number = Big(big.parse(digits).unwrap())
+
+private rat(n: long, d: long) -> Number = Rat(q.ratio(n, d))
+
+private nan() -> Number = Real(real.nan())
+
+private inf() -> Number = Real(real.infinity())
+
+// 2^64, and 2^70, which is past `long` by enough that a quotient of it is still a `Big`.
+private two64() -> Number = bigof("18446744073709551616")
+
+private two70() -> Number = bigof("1180591620717411303424")
+
+private val p: Policy = funl()
+
+// -- the four operations over every pair of kinds ---------------------------------------------------
+
+@test
+add_over_every_pair_of_kinds()
+    check(p.add(Int(2), Int(3)), "Int 5")
+    check(p.add(Int(1), two64()), "Big 18446744073709551617")
+    check(p.add(Int(1), rat(1, 2)), "Rat 3/2")
+    check(p.add(Int(1), Real(0.5)), "Real 1.5")
+    check(p.add(two64(), Int(-1)), "Big 18446744073709551615")
+    check(p.add(two64(), two64()), "Big 36893488147419103232")
+    check(p.add(two64(), rat(1, 2)), "Rat 36893488147419103233/2")
+    check(p.add(two64(), Real(0.5)), "Real 1.8446744073709552e+19")
+    check(p.add(rat(1, 3), Int(1)), "Rat 4/3")
+    check(p.add(rat(1, 3), bigof("2")), "Rat 7/3")
+    check(p.add(rat(1, 3), rat(1, 6)), "Rat 1/2")
+    check(p.add(rat(1, 4), Real(0.5)), "Real 0.75")
+    check(p.add(Real(0.5), Int(1)), "Real 1.5")
+    check(p.add(Real(0.5), bigof("1")), "Real 1.5")
+    check(p.add(Real(0.25), rat(1, 2)), "Real 0.75")
+    check(p.add(Real(0.1), Real(0.2)), "Real 0.30000000000000004")
+
+@test
+sub_over_every_pair_of_kinds()
+    check(p.sub(Int(2), Int(3)), "Int -1")
+    check(p.sub(Int(0), two64()), "Big -18446744073709551616")
+    check(p.sub(Int(1), rat(1, 2)), "Rat 1/2")
+    check(p.sub(Int(1), Real(0.25)), "Real 0.75")
+    check(p.sub(two64(), Int(1)), "Big 18446744073709551615")
+    check(p.sub(two64(), two64()), "Int 0")
+    check(p.sub(two64(), rat(1, 2)), "Rat 36893488147419103231/2")
+    check(p.sub(two64(), Real(1.0)), "Real 1.8446744073709552e+19")
+    check(p.sub(rat(1, 2), Int(1)), "Rat -1/2")
+    check(p.sub(rat(5, 2), bigof("2")), "Rat 1/2")
+    check(p.sub(rat(1, 2), rat(1, 3)), "Rat 1/6")
+    check(p.sub(rat(1, 2), Real(0.25)), "Real 0.25")
+    check(p.sub(Real(0.5), Int(1)), "Real -0.5")
+    check(p.sub(Real(2.5), bigof("1")), "Real 1.5")
+    check(p.sub(Real(1.0), rat(1, 4)), "Real 0.75")
+    check(p.sub(Real(1.5), Real(1.5)), "Real 0.0")
+
+@test
+mul_over_every_pair_of_kinds()
+    check(p.mul(Int(6), Int(7)), "Int 42")
+    check(p.mul(Int(2), two64()), "Big 36893488147419103232")
+    check(p.mul(Int(3), rat(1, 6)), "Rat 1/2")
+    check(p.mul(Int(3), Real(0.5)), "Real 1.5")
+    check(p.mul(two64(), Int(0)), "Int 0")
+    check(p.mul(two64(), two64()), "Big 340282366920938463463374607431768211456")
+    check(p.mul(two64(), rat(1, 3)), "Rat 18446744073709551616/3")
+    check(p.mul(two64(), Real(0.5)), "Real 9.223372036854776e+18")
+    check(p.mul(rat(2, 3), Int(5)), "Rat 10/3")
+    check(p.mul(rat(1, 4), bigof("2")), "Rat 1/2")
+    check(p.mul(rat(2, 3), rat(3, 4)), "Rat 1/2")
+    check(p.mul(rat(1, 2), Real(3.0)), "Real 1.5")
+    check(p.mul(Real(2.5), Int(2)), "Real 5.0")
+    check(p.mul(Real(0.5), bigof("4")), "Real 2.0")
+    check(p.mul(Real(4.0), rat(1, 8)), "Real 0.5")
+    check(p.mul(Real(1.5), Real(2.0)), "Real 3.0")
+
+@test
+div_over_every_pair_of_kinds()
+    check(p.div(Int(7), Int(2)), "Rat 7/2")
+    check(p.div(Int(6), Int(2)), "Int 3")
+    check(p.div(Int(1), two64()), "Rat 1/18446744073709551616")
+    check(p.div(Int(3), rat(3, 4)), "Int 4")
+    check(p.div(Int(3), Real(2.0)), "Real 1.5")
+    check(p.div(two64(), Int(2)), "Big 9223372036854775808")
+    check(p.div(two64(), Int(4)), "Int 4611686018427387904")
+    check(p.div(two64(), two64()), "Int 1")
+    check(p.div(two64(), rat(1, 2)), "Big 36893488147419103232")
+    check(p.div(two64(), Real(4.0)), "Real 4.611686018427388e+18")
+    check(p.div(rat(1, 2), Int(3)), "Rat 1/6")
+    check(p.div(rat(1, 2), bigof("2")), "Rat 1/4")
+    check(p.div(rat(1, 2), rat(1, 4)), "Int 2")
+    check(p.div(rat(1, 2), Real(0.25)), "Real 2.0")
+    check(p.div(Real(3.0), Int(2)), "Real 1.5")
+    check(p.div(Real(3.0), bigof("4")), "Real 0.75")
+    check(p.div(Real(1.0), rat(1, 4)), "Real 4.0")
+    check(p.div(Real(1.0), Real(4.0)), "Real 0.25")
+
+// -- the 64-bit edges -------------------------------------------------------------------------------
+
+@test
+an_int_that_overflows_becomes_a_big()
+    check(p.add(Int(max), Int(1)), "Big 9223372036854775808")
+    check(p.sub(Int(min), Int(1)), "Big -9223372036854775809")
+    check(p.mul(Int(max), Int(2)), "Big 18446744073709551614")
+    check(p.mul(Int(min), Int(-1)), "Big 9223372036854775808")
+    check(p.mul(Int(max), Int(max)), "Big 85070591730234615847396907784232501249")
+    check(p.add(Int(min), Int(min)), "Big -18446744073709551616")
+
+@test
+an_int_that_does_not_overflow_stays_an_int()
+    check(p.add(Int(max), Int(min)), "Int -1")
+    check(p.sub(Int(min), Int(-1)), "Int -9223372036854775807")
+    check(p.mul(Int(min), Int(1)), "Int -9223372036854775808")
+    check(p.add(Int(max - 1), Int(1)), "Int 9223372036854775807")
+
+@test
+the_single_operand_overflows_of_the_most_negative_long()
+    check(p.neg(Int(min)), "Big 9223372036854775808")
+    check(p.abs(Int(min)), "Big 9223372036854775808")
+    check(p.quot(Int(min), Int(-1)), "Big 9223372036854775808")
+    check(p.floor_div(Int(min), Int(-1)), "Big 9223372036854775808")
+    check(p.div(Int(min), Int(-1)), "Big 9223372036854775808")
+    check(p.rem(Int(min), Int(-1)), "Int 0")
+    check(p.modulo(Int(min), Int(-1)), "Int 0")
+    check(p.neg(Int(max)), "Int -9223372036854775807")
+
+@test
+a_big_that_comes_back_into_range_is_an_int_again()
+    check(p.sub(bigof("9223372036854775808"), Int(1)), "Int 9223372036854775807")
+    check(p.neg(bigof("9223372036854775808")), "Int -9223372036854775808")
+    check(p.add(bigof("-9223372036854775809"), Int(1)), "Int -9223372036854775808")
+    check(p.sub(p.add(Int(max), Int(1)).unwrap(), Int(1)), "Int 9223372036854775807")
+
+@test
+an_exact_result_is_demoted_and_an_inexact_one_is_not()
+    check(p.add(rat(1, 2), rat(1, 2)), "Int 1")
+    check(p.mul(rat(2, 3), Int(3)), "Int 2")
+    check(p.mul(rat(1, 2), two64()), "Big 9223372036854775808")
+    check(p.add(bigof("5"), Int(1)), "Int 6")
+    check(p.mul(Real(2.5), Int(2)), "Real 5.0")
+    check(p.add(Real(0.5), rat(1, 2)), "Real 1.0")
+
+// -- division by zero, in every operation that divides ----------------------------------------------
+
+@test
+division_by_zero_is_an_error_in_every_kind()
+    check(p.div(Int(1), Int(0)), "error DivisionByZero")
+    check(p.div(two64(), Int(0)), "error DivisionByZero")
+    check(p.div(two64(), bigof("0")), "error DivisionByZero")
+    check(p.div(rat(1, 2), Int(0)), "error DivisionByZero")
+    check(p.div(Int(1), rat(0, 5)), "error DivisionByZero")
+    check(p.div(Real(1.0), Real(0.0)), "error DivisionByZero")
+    check(p.div(Real(1.0), Int(0)), "error DivisionByZero")
+    check(p.div(Int(1), Real(0.0)), "error DivisionByZero")
+    check(p.div(Real(0.0), Real(0.0)), "error DivisionByZero")
+    check(p.div(Int(0), Int(0)), "error DivisionByZero")
+
+@test
+integer_division_by_zero_is_an_error_in_every_kind()
+    for f in 0..<4
+        val (floor, remainder) = (f >= 2, f % 2 == 1)
+
+        check(divided(p, Int(7), Int(0), floor, remainder), "error DivisionByZero")
+        check(divided(p, two64(), Int(0), floor, remainder), "error DivisionByZero")
+        check(divided(p, rat(7, 2), Int(0), floor, remainder), "error DivisionByZero")
+        check(divided(p, Real(7.0), Real(0.0), floor, remainder), "error DivisionByZero")
+        check(divided(policy(ieee = true), Real(7.0), Real(0.0), floor, remainder), "error DivisionByZero")
+
+@test
+the_four_named_integer_divisions_refuse_a_zero_divisor()
+    check(p.quot(Int(1), Int(0)), "error DivisionByZero")
+    check(p.rem(Int(1), Int(0)), "error DivisionByZero")
+    check(p.floor_div(Int(1), Int(0)), "error DivisionByZero")
+    check(p.modulo(Int(1), Int(0)), "error DivisionByZero")
+
+@test
+under_ieee_a_float_zero_divisor_gives_an_infinity_and_an_exact_one_still_refuses()
+    val ieee = policy(ieee = true)
+
+    check(ieee.div(Real(1.0), Real(0.0)), "Real inf")
+    check(ieee.div(Real(-1.0), Real(0.0)), "Real -inf")
+    check(ieee.div(Real(0.0), Real(0.0)), "Real nan")
+    check(ieee.div(Int(1), Real(0.0)), "Real inf")
+    check(ieee.div(Int(1), Int(0)), "error DivisionByZero")
+    check(ieee.div(rat(1, 2), Int(0)), "error DivisionByZero")
+
+// -- the integer-division family ---------------------------------------------------------------------
+
+@test
+quot_and_rem_round_toward_zero()
+    check(p.quot(Int(7), Int(2)), "Int 3")
+    check(p.quot(Int(-7), Int(2)), "Int -3")
+    check(p.quot(Int(7), Int(-2)), "Int -3")
+    check(p.quot(Int(-7), Int(-2)), "Int 3")
+    check(p.rem(Int(7), Int(2)), "Int 1")
+    check(p.rem(Int(-7), Int(2)), "Int -1")
+    check(p.rem(Int(7), Int(-2)), "Int 1")
+    check(p.rem(Int(-7), Int(-2)), "Int -1")
+
+@test
+floor_div_and_modulo_round_toward_negative_infinity()
+    check(p.floor_div(Int(7), Int(2)), "Int 3")
+    check(p.floor_div(Int(-7), Int(2)), "Int -4")
+    check(p.floor_div(Int(7), Int(-2)), "Int -4")
+    check(p.floor_div(Int(-7), Int(-2)), "Int 3")
+    check(p.modulo(Int(7), Int(2)), "Int 1")
+    check(p.modulo(Int(-7), Int(2)), "Int 1")
+    check(p.modulo(Int(7), Int(-2)), "Int -1")
+    check(p.modulo(Int(-7), Int(-2)), "Int -1")
+    check(p.modulo(Int(-6), Int(2)), "Int 0")
+
+@test
+the_integer_divisions_over_big_integers()
+    check(p.quot(two70(), Int(3)), "Big 393530540239137101141")
+    check(p.rem(two70(), Int(3)), "Int 1")
+    check(p.floor_div(p.neg(two70()).unwrap(), Int(3)), "Big -393530540239137101142")
+    check(p.modulo(p.neg(two70()).unwrap(), Int(3)), "Int 2")
+    check(p.quot(p.neg(two70()).unwrap(), Int(3)), "Big -393530540239137101141")
+    check(p.rem(p.neg(two70()).unwrap(), Int(3)), "Int -1")
+    check(p.quot(bigof("-7"), bigof("2")), "Int -3")
+    check(p.floor_div(bigof("-7"), bigof("2")), "Int -4")
+
+@test
+the_integer_divisions_over_rationals_are_exact()
+    check(p.quot(rat(7, 2), rat(1, 3)), "Int 10")
+    check(p.rem(rat(7, 2), rat(1, 3)), "Rat 1/6")
+    check(p.quot(rat(-7, 2), rat(1, 3)), "Int -10")
+    check(p.rem(rat(-7, 2), rat(1, 3)), "Rat -1/6")
+    check(p.floor_div(rat(-7, 2), rat(1, 3)), "Int -11")
+    check(p.modulo(rat(-7, 2), rat(1, 3)), "Rat 1/6")
+    check(p.modulo(rat(7, 2), Int(1)), "Rat 1/2")
+
+@test
+the_integer_divisions_over_doubles()
+    check(p.quot(Real(7.5), Real(2.0)), "Real 3.0")
+    check(p.rem(Real(7.5), Real(2.0)), "Real 1.5")
+    check(p.quot(Real(-7.5), Real(2.0)), "Real -3.0")
+    check(p.rem(Real(-7.5), Real(2.0)), "Real -1.5")
+    check(p.floor_div(Real(-7.5), Real(2.0)), "Real -4.0")
+    check(p.modulo(Real(-7.5), Real(2.0)), "Real 0.5")
+    check(p.modulo(Int(-7), Real(2.0)), "Real 1.0")
+    check(p.modulo(Real(7.5), Int(-2)), "Real -0.5")
+
+@test
+quotient_and_remainder_reassemble_the_dividend_at_every_edge()
+    val values = [min, min + 1, -7, -2, -1, 0, 1, 2, 7, max - 1, max]
+
+    for a in values
+        for b in values
+            if b == 0 then continue
+
+            for floor in [false, true]
+                val qt = divided(p, Int(a), Int(b), floor, false).unwrap()
+                val rt = divided(p, Int(a), Int(b), floor, true).unwrap()
+                val back = p.add(p.mul(Int(b), qt).unwrap(), rt).unwrap()
+
+                assert(equal(back, Int(a)))
+                assert(less(p.abs(rt).unwrap(), p.abs(Int(b)).unwrap()))
+
+                // A truncated remainder has the dividend's sign; a floored one the divisor's.
+                if sign(rt) != 0 then assert_eq(sign(rt), if floor then sign(Int(b)) else sign(Int(a)))
+
+@test
+integral_refuses_anything_but_an_exact_integer()
+    val strict = policy(integral = true)
+
+    check(strict.quot(Real(7.0), Int(2)), "error NotAnInteger")
+    check(strict.rem(Int(7), Real(2.0)), "error NotAnInteger")
+    check(strict.floor_div(rat(1, 2), Int(1)), "error NotAnInteger")
+    check(strict.modulo(Int(1), rat(1, 2)), "error NotAnInteger")
+    check(strict.quot(Int(7), Int(2)), "Int 3")
+    check(strict.modulo(two70(), Int(3)), "Int 1")
+
+// -- negation and magnitude --------------------------------------------------------------------------
+
+@test
+neg_and_abs_in_every_kind()
+    check(p.neg(Int(5)), "Int -5")
+    check(p.neg(two64()), "Big -18446744073709551616")
+    check(p.neg(rat(1, 2)), "Rat -1/2")
+    check(p.neg(Real(1.5)), "Real -1.5")
+    check(p.neg(Real(0.0)), "Real -0.0")
+    check(p.abs(Int(-5)), "Int 5")
+    check(p.abs(Int(5)), "Int 5")
+    check(p.abs(p.neg(two64()).unwrap()), "Big 18446744073709551616")
+    check(p.abs(rat(-1, 2)), "Rat 1/2")
+    check(p.abs(Real(-0.0)), "Real 0.0")
+    check(p.abs(Real(-2.5)), "Real 2.5")
+    check(p.abs(bigof("-5")), "Int 5")
+
+// -- powers ------------------------------------------------------------------------------------------
+
+@test
+an_integer_power_of_an_integer()
+    check(p.pow(Int(2), Int(10)), "Int 1024")
+    check(p.pow(Int(2), Int(64)), "Big 18446744073709551616")
+    check(p.pow(Int(-2), Int(3)), "Int -8")
+    check(p.pow(Int(-2), Int(63)), "Int -9223372036854775808")
+    check(p.pow(Int(2), Int(63)), "Big 9223372036854775808")
+    check(p.pow(two64(), Int(2)), "Big 340282366920938463463374607431768211456")
+    check(p.pow(bigof("3"), Int(2)), "Int 9")
+    check(p.pow(Int(0), Int(0)), "Int 1")
+    check(p.pow(Int(0), Int(5)), "Int 0")
+    check(p.pow(Int(7), Int(0)), "Int 1")
+
+@test
+a_negative_power_is_a_reciprocal()
+    check(p.pow(Int(2), Int(-2)), "Rat 1/4")
+    check(p.pow(Int(-2), Int(-3)), "Rat -1/8")
+    check(p.pow(rat(1, 2), Int(-1)), "Int 2")
+    check(p.pow(rat(2, 3), Int(-2)), "Rat 9/4")
+    check(p.pow(Int(1), Int(-5)), "Int 1")
+    check(p.pow(Int(-1), Int(-5)), "Int -1")
+
+@test
+a_power_of_a_rational()
+    check(p.pow(rat(2, 3), Int(2)), "Rat 4/9")
+    check(p.pow(rat(-1, 2), Int(3)), "Rat -1/8")
+
+@test
+one_and_minus_one_take_any_exponent()
+    val huge = bigof("1000000000000000000000000000001")
+
+    check(p.pow(Int(1), huge), "Int 1")
+    check(p.pow(Int(-1), huge), "Int -1")
+    check(p.pow(Int(-1), p.add(huge, Int(1)).unwrap()), "Int 1")
+
+@test
+a_power_of_a_double()
+    check(p.pow(Real(2.0), Int(10)), "Real 1024.0")
+    check(p.pow(Real(2.0), Int(-1)), "Real 0.5")
+    check(p.pow(Real(1.0), two70()), "Real 1.0")
+    check(p.pow(Real(10.0), Int(400)), "error FloatOverflow")
+    check(p.pow(Real(0.0), Int(-1)), "error DivisionByZero")
+    check(policy(ieee = true).pow(Real(0.0), Int(-1)), "Real inf")
+
+@test
+the_exponent_must_be_an_integer()
+    check(p.pow(Int(2), Real(2.0)), "error NotAnInteger")
+    check(p.pow(Int(2), rat(1, 2)), "error NotAnInteger")
+    check(p.pow(Int(2), Rat(q.from_int(3))), "Int 8")
+    check(p.pow(Int(0), Int(-1)), "error DivisionByZero")
+
+@test
+a_power_too_large_to_hold_is_refused_rather_than_attempted()
+    check(p.pow(Int(2), Int(100000000)), "error ExponentTooLarge")
+    check(p.pow(Int(2), two70()), "error ExponentTooLarge")
+    check(p.pow(rat(1, 2), Int(-100000000)), "error ExponentTooLarge")
+    check(p.pow(rat(3, 2), Int(100000000)), "error ExponentTooLarge")
+    assert(p.pow(Int(2), Int(1000)).unwrap() == Big(big.pow(big.from_int(2), 1000)))
+
+@test
+mixing_does_not_bind_a_power()
+    check(policy(mixing = false).pow(Real(3.0), Int(2)), "Real 9.0")
+
+// -- comparison and equality ------------------------------------------------------------------------
+
+@test
+comparison_across_kinds_is_exact()
+    assert_eq(compare(Int(1), Int(2)), Some(-1))
+    assert_eq(compare(Int(2), two64()), Some(-1))
+    assert_eq(compare(two64(), Int(2)), Some(1))
+    assert_eq(compare(rat(1, 2), Int(0)), Some(1))
+    assert_eq(compare(rat(1, 2), two64()), Some(-1))
+    assert_eq(compare(Real(0.5), rat(1, 2)), Some(0))
+    assert_eq(compare(rat(1, 3), Real(0.3333333333333333)), Some(1))
+    assert_eq(compare(Real(0.3333333333333333), rat(1, 3)), Some(-1))
+    assert_eq(compare(Int(9007199254740993), Real(9007199254740992.0)), Some(1))
+    assert_eq(compare(Real(1.5), Real(2.5)), Some(-1))
+
+@test
+an_infinity_is_beyond_every_exact_value()
+    assert(less(p.pow(Int(10), Int(400)).unwrap(), inf()))
+    assert(greater(Int(min), Real(-real.infinity())))
+    assert(less(Real(-real.infinity()), rat(-1, 3)))
+
+@test
+a_nan_is_unordered()
+    assert_eq(compare(nan(), Int(1)), None)
+    assert_eq(compare(Int(1), nan()), None)
+    assert_eq(compare(nan(), nan()), None)
+    assert(!equal(nan(), nan()))
+    assert(!less(nan(), Int(1)))
+    assert(!less_eq(nan(), Int(1)))
+    assert(!greater(nan(), Int(1)))
+    assert(!greater_eq(nan(), Int(1)))
+
+@test
+the_ordering_helpers()
+    assert(less(Int(1), Int(2)))
+    assert(less_eq(Int(2), Int(2)))
+    assert(less_eq(Int(1), Real(2.0)))
+    assert(greater(rat(1, 2), Real(0.25)))
+    assert(greater_eq(rat(1, 2), Real(0.5)))
+    assert(!greater_eq(Int(1), Int(2)))
+    assert(!less(Int(2), Int(1)))
+
+@test
+equal_is_numeric_and_eq_is_identity()
+    assert(equal(Int(1), Real(1.0)))
+    assert(Int(1) != Real(1.0))
+    assert(equal(Int(5), bigof("5")))
+    assert(Int(5) != bigof("5"))
+    assert(equal(Real(0.0), Real(-0.0)))
+    assert(equal(Int(0), Real(-0.0)))
+    assert(Real(0.0) == Real(-0.0))
+    assert(nan() == nan())
+    assert(rat(1, 2) == rat(2, 4))
+    assert(two64() == two64())
+    assert(Int(3) == Int(3))
+    assert(Int(3) != Int(4))
+
+// -- text --------------------------------------------------------------------------------------------
+
+@test
+parse_reads_each_kind()
+    check(p.parse("42"), "Int 42")
+    check(p.parse("-42"), "Int -42")
+    check(p.parse("+42"), "Int 42")
+    check(p.parse("0"), "Int 0")
+    check(p.parse("9223372036854775807"), "Int 9223372036854775807")
+    check(p.parse("9223372036854775808"), "Big 9223372036854775808")
+    check(p.parse("-9223372036854775808"), "Int -9223372036854775808")
+    check(p.parse("-9223372036854775809"), "Big -9223372036854775809")
+    check(p.parse("7/2"), "Rat 7/2")
+    check(p.parse("-6/4"), "Rat -3/2")
+    check(p.parse("4/2"), "Int 2")
+    check(p.parse("0.1"), "Real 0.1")
+    check(p.parse("-2.5"), "Real -2.5")
+    check(p.parse("1e3"), "Real 1000.0")
+    check(p.parse("1.5E-3"), "Real 0.0015")
+    check(p.parse("2.0e+2"), "Real 200.0")
+
+@test
+parse_refuses_what_is_not_a_number()
+    for s in ["", "-", "+", "1.", ".5", "1e", "1e+", "1/", "/2", "1/-2", "1/2/3", "1 ", " 1", "1_000",
+              "0x10", "abc", "1.2.3", "--1", "1/2.0", "infinity", "1.5x"]
+        check(p.parse(s), "error Syntax")
+
+@test
+parse_refuses_what_the_policy_leaves_out()
+    check(p.parse("1/0"), "error DivisionByZero")
+    check(p.parse("inf"), "error FloatOverflow")
+    check(p.parse("nan"), "error Undefined")
+    check(p.parse("1e999"), "error FloatOverflow")
+    check(iso_prolog(false).parse("1/3"), "error NeedsRational")
+    check(iso_prolog(false).parse("6/3"), "Int 2")
+    check(policy(floats = false).parse("1.5"), "error NeedsFloat")
+    check(policy(bigints = false).parse("9223372036854775808"), "error Overflow")
+
+@test
+parse_reads_the_non_finite_doubles_under_ieee()
+    val ieee = policy(ieee = true)
+
+    check(ieee.parse("inf"), "Real inf")
+    check(ieee.parse("+inf"), "Real inf")
+    check(ieee.parse("-inf"), "Real -inf")
+    check(ieee.parse("nan"), "Real nan")
+
+@test
+a_double_is_written_shortest_and_never_as_an_integer()
+    assert_eq(to_string(Real(1.0)), "1.0")
+    assert_eq(to_string(Real(0.1)), "0.1")
+    assert_eq(to_string(Real(-0.0)), "-0.0")
+    assert_eq(to_string(Real(1e23)), "1.0e+23")
+    assert_eq(to_string(Real(1e-7)), "1.0e-07")
+    assert_eq(to_string(Real(1.5e300)), "1.5e+300")
+    assert_eq(to_string(Real(0.3333333333333333)), "0.3333333333333333")
+    assert_eq(to_string(Real(123456.0)), "123456.0")
+    assert_eq(to_string(inf()), "inf")
+    assert_eq(to_string(Real(-real.infinity())), "-inf")
+    assert_eq(to_string(nan()), "nan")
+
+@test
+display_is_to_string()
+    assert_eq(s"${Int(-3)}", "-3")
+    assert_eq(s"${rat(1, 2)}", "1/2")
+    assert_eq(s"${Real(2.0)}", "2.0")
+    assert_eq(s"${two64()}", "18446744073709551616")
+
+@test
+every_admitted_number_reads_back_as_itself()
+    val ieee = policy(ieee = true)
+    val numbers = [Int(0), Int(-1), Int(max), Int(min), two64(), p.neg(two70()).unwrap(), rat(1, 3), rat(-22, 7),
+                   Real(0.1), Real(-0.0), Real(1e23), Real(5e-324), Real(1.7976931348623157e308),
+                   Real(0.3333333333333333), Real(123456.0), inf(), Real(-real.infinity())]
+
+    for n in numbers
+        assert(ieee.parse(to_string(n)).unwrap() == n)
+
+    assert(ieee.parse(to_string(nan())).unwrap() == nan())
+
+// -- the policy, field by field ----------------------------------------------------------------------
+
+@test
+the_defaults()
+    val d = policy()
+
+    assert(d.bigints && d.rationals && d.floats && d.demote && d.mixing)
+    assert(!d.ieee && !d.integral)
+    assert(d.division == Exact)
+
+@test
+bigints_off_makes_an_overflow_an_error()
+    val bounded = policy(bigints = false)
+
+    check(bounded.add(Int(max), Int(1)), "error Overflow")
+    check(bounded.mul(Int(min), Int(-1)), "error Overflow")
+    check(bounded.neg(Int(min)), "error Overflow")
+    check(bounded.quot(Int(min), Int(-1)), "error Overflow")
+    check(bounded.pow(Int(2), Int(64)), "error Overflow")
+    check(bounded.pow(rat(1, 2), Int(64)), "error Overflow")
+    check(bounded.add(Int(max - 1), Int(1)), "Int 9223372036854775807")
+    check(bounded.div(Int(max), Int(max - 1)), "Rat 9223372036854775807/9223372036854775806")
+    check(bounded.of_big(big.from_int(5)), "Int 5")
+
+@test
+rationals_off_refuses_a_fraction_and_keeps_a_whole_one()
+    val whole_only = policy(rationals = false)
+
+    check(whole_only.div(Int(7), Int(2)), "error NeedsRational")
+    check(whole_only.div(Int(6), Int(2)), "Int 3")
+    check(whole_only.pow(Int(2), Int(-1)), "error NeedsRational")
+    check(whole_only.of_rational(q.ratio(4, 2)), "Int 2")
+    check(whole_only.of_rational(q.ratio(1, 2)), "error NeedsRational")
+
+@test
+floats_off_refuses_a_double()
+    val exact_only = policy(floats = false)
+
+    check(exact_only.add(Real(1.0), Int(1)), "error NeedsFloat")
+    check(policy(floats = false, division = ToFloat).div(Int(1), Int(2)), "error NeedsFloat")
+    check(exact_only.div(Int(1), Int(2)), "Rat 1/2")
+
+@test
+each_division_mode_on_two_integers()
+    // What `7 / 2`, `-7 / 2` and `6 / 2` are under each mode.
+    for (mode, seven, minus_seven, six) in [
+            (Exact, "Rat 7/2", "Rat -7/2", "Int 3"),
+            (IntOrFloat, "Real 3.5", "Real -3.5", "Int 3"),
+            (ToFloat, "Real 3.5", "Real -3.5", "Real 3.0"),
+            (Truncate, "Int 3", "Int -3", "Int 3"),
+            (Floor, "Int 3", "Int -4", "Int 3")]
+        val d = policy(division = mode)
+
+        check(d.div(Int(7), Int(2)), seven)
+        check(d.div(Int(-7), Int(2)), minus_seven)
+        check(d.div(Int(6), Int(2)), six)
+
+@test
+a_division_mode_does_not_reach_a_rational_or_a_double()
+    check(policy(division = Truncate).div(rat(7, 2), Int(2)), "Rat 7/4")
+    check(policy(division = ToFloat).div(rat(1, 2), Int(2)), "Rat 1/4")
+    check(policy(division = Exact).div(Real(7.0), Int(2)), "Real 3.5")
+
+@test
+a_division_mode_over_big_integers()
+    check(policy(division = IntOrFloat).div(two64(), Int(2)), "Big 9223372036854775808")
+    check(policy(division = IntOrFloat).div(two64(), Int(3)), "Real 6.148914691236517e+18")
+    check(policy(division = Floor).div(p.neg(two70()).unwrap(), Int(3)), "Big -393530540239137101142")
+
+@test
+a_float_quotient_of_integers_is_rounded_once()
+    // 2^55 + 3 is not a double: as one it is 2^55, a third of which rounds down to ...322. The true
+    // third, 12009599006321323.67, is nearer ...324.
+    check(policy(division = ToFloat).div(Int(36028797018963971), Int(3)), "Real 12009599006321324.0")
+    check(policy(division = IntOrFloat).div(Int(36028797018963971), Int(3)), "Real 12009599006321324.0")
+    assert_eq(36028797018963971.0 / 3.0, 12009599006321322.0)
+
+@test
+demote_off_keeps_a_value_in_the_kind_it_was_computed_in()
+    val keep = policy(demote = false)
+
+    check(keep.add(bigof("5"), Int(1)), "Big 6")
+    check(keep.mul(rat(1, 2), Int(2)), "Rat 1/1")
+    check(keep.sub(bigof("9223372036854775808"), Int(1)), "Big 9223372036854775807")
+    check(keep.add(Int(2), Int(3)), "Int 5")
+    check(keep.add(Int(max), Int(1)), "Big 9223372036854775808")
+    check(keep.div(Int(6), Int(2)), "Int 3")
+    check(keep.pow(Int(2), Int(3)), "Int 8")
+    check(keep.parse("5"), "Int 5")
+    check(keep.of_big(big.from_int(5)), "Big 5")
+
+@test
+mixing_off_refuses_an_exact_operand_beside_a_double()
+    val apart = policy(mixing = false)
+
+    check(apart.add(Int(1), Real(1.0)), "error MixedKinds")
+    check(apart.mul(Real(1.0), rat(1, 2)), "error MixedKinds")
+    check(apart.div(two64(), Real(1.0)), "error MixedKinds")
+    check(apart.modulo(Int(1), Real(1.0)), "error MixedKinds")
+    check(apart.add(Real(1.0), Real(2.0)), "Real 3.0")
+    assert(equal(Int(1), Real(1.0)))
+
+@test
+ieee_decides_whether_a_non_finite_double_is_a_result()
+    check(p.mul(Real(1e308), Real(10.0)), "error FloatOverflow")
+    check(policy(ieee = true).mul(Real(1e308), Real(10.0)), "Real inf")
+    check(p.sub(inf(), inf()), "error Undefined")
+    check(policy(ieee = true).sub(inf(), inf()), "Real nan")
+    check(p.add(Real(1.0), nan()), "error Undefined")
+
+// -- the presets --------------------------------------------------------------------------------------
+
+@test
+funl_is_exact_until_asked()
+    val f = funl()
+
+    check(f.div(Int(7), Int(2)), "Rat 7/2")
+    check(f.add(f.div(Int(1), Int(3)).unwrap(), f.div(Int(1), Int(6)).unwrap()), "Rat 1/2")
+    check(f.pow(Int(2), Int(100)), "Big 1267650600228229401496703205376")
+    check(f.quot(Int(7), Int(2)), "Int 3")
+    check(f.modulo(Real(7.5), Int(2)), "Real 1.5")
+    check(f.mul(Real(2.5), Int(2)), "Real 5.0")
+
+@test
+iso_prolog_without_rationals()
+    val iso = iso_prolog(false)
+
+    assert(!iso.rationals && iso.integral && iso.division == IntOrFloat)
+    check(iso.div(Int(7), Int(2)), "Real 3.5")
+    check(iso.div(Int(6), Int(2)), "Int 3")
+    check(iso.pow(Int(2), Int(-1)), "error NeedsRational")
+    check(iso.pow(Int(1), Int(-1)), "Int 1")
+    check(iso.quot(Int(-7), Int(2)), "Int -3")
+    check(iso.floor_div(Int(-7), Int(2)), "Int -4")
+    check(iso.quot(Real(7.0), Int(2)), "error NotAnInteger")
+    check(iso.add(Int(1), Real(2.0)), "Real 3.0")
+    check(iso.div(Real(1.0), Int(0)), "error DivisionByZero")
+    check(iso.add(Int(max), Int(1)), "Big 9223372036854775808")
+
+@test
+iso_prolog_with_prefer_rationals()
+    val iso = iso_prolog(true)
+
+    assert(iso.rationals && iso.integral && iso.division == Exact)
+    check(iso.div(Int(7), Int(2)), "Rat 7/2")
+    check(iso.pow(Int(2), Int(-1)), "Rat 1/2")
+    check(iso.rem(rat(7, 2), Int(1)), "error NotAnInteger")
+
+// -- conversions -------------------------------------------------------------------------------------
+
+@test
+of_big_and_of_rational_go_through_the_policy()
+    check(p.of_big(big.from_int(5)), "Int 5")
+    check(p.of_big(big.parse("18446744073709551616").unwrap()), "Big 18446744073709551616")
+    check(p.of_rational(q.ratio(4, 2)), "Int 2")
+    check(p.of_rational(q.ratio(2, 4)), "Rat 1/2")
+    check(p.admit(Real(1.0)), "Real 1.0")
+
+@test
+the_conversions_out()
+    assert_eq(to_real(rat(1, 3)), 1.0 / 3.0)
+    assert_eq(to_real(two64()), 18446744073709551616.0)
+    assert_eq(to_real(Int(-3)), -3.0)
+    assert_eq(to_real(Real(2.5)), 2.5)
+    assert_eq(to_long(Int(5)), Some(5))
+    assert_eq(to_long(bigof("-5")), Some(-5))
+    assert_eq(to_long(two64()), None)
+    assert_eq(to_long(Rat(q.from_int(4))), Some(4))
+    assert_eq(to_long(rat(1, 2)), None)
+    assert_eq(to_long(Real(5.0)), None)
+    assert(to_rational(Real(0.5)).is_none())
+    assert(to_rational(Int(3)).unwrap() == q.from_int(3))
+    assert(to_rational(rat(1, 2)).unwrap() == q.ratio(1, 2))
+    assert(to_rational(two64()).unwrap() == q.from_big(big.parse("18446744073709551616").unwrap()))
+
+@test
+the_predicates()
+    assert(is_integer(Int(1)) && is_integer(two64()) && is_integer(Rat(q.from_int(2))) && is_integer(Real(2.0)))
+    assert(!is_integer(rat(1, 2)) && !is_integer(Real(2.5)) && !is_integer(inf()) && !is_integer(nan()))
+    assert(is_exact(Int(1)) && is_exact(two64()) && is_exact(rat(1, 2)) && !is_exact(Real(1.0)))
+    assert_eq(sign(Int(-4)), -1)
+    assert_eq(sign(Int(0)), 0)
+    assert_eq(sign(two64()), 1)
+    assert_eq(sign(rat(-1, 2)), -1)
+    assert_eq(sign(Real(0.5)), 1)
+    assert_eq(sign(Real(-0.0)), 0)
+    assert_eq(sign(nan()), 0)
+
+@test
+every_error_describes_itself()
+    for e in [DivisionByZero, Overflow, FloatOverflow, Undefined, NeedsRational, NeedsFloat, MixedKinds,
+              NotAnInteger, ExponentTooLarge, Syntax]
+        assert(e.describe().len > 0)
+        assert_eq(s"$e", e.describe())
+
+    assert_eq(DivisionByZero.describe(), "division by zero")
+    assert_eq(Syntax.describe(), "not a number")
