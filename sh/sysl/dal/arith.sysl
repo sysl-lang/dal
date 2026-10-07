@@ -45,7 +45,7 @@ private[dal] sum(p: Policy, a: Number, b: Number) -> Result[Number, NumberError]
         Some(s) -> Ok(Int(s))
         None -> grown(p, big.add(big.from_int(x), big.from_int(y)))
     Bigs(x, y) -> p.admit(Big(big.add(x, y)))
-    Rats(x, y) -> p.admit(Rat(q.add(x, y)))
+    Rats(x, y) -> carried(p, Rat(q.add(x, y)))
     Reals(x, y) -> p.admit(Real(x + y))
 
 private[dal] difference(p: Policy, a: Number, b: Number) -> Result[Number, NumberError] = lane(p, a, b)? match
@@ -53,7 +53,7 @@ private[dal] difference(p: Policy, a: Number, b: Number) -> Result[Number, Numbe
         Some(s) -> Ok(Int(s))
         None -> grown(p, big.sub(big.from_int(x), big.from_int(y)))
     Bigs(x, y) -> p.admit(Big(big.sub(x, y)))
-    Rats(x, y) -> p.admit(Rat(q.sub(x, y)))
+    Rats(x, y) -> carried(p, Rat(q.sub(x, y)))
     Reals(x, y) -> p.admit(Real(x - y))
 
 private[dal] product(p: Policy, a: Number, b: Number) -> Result[Number, NumberError] = lane(p, a, b)? match
@@ -61,14 +61,14 @@ private[dal] product(p: Policy, a: Number, b: Number) -> Result[Number, NumberEr
         Some(s) -> Ok(Int(s))
         None -> grown(p, big.mul(big.from_int(x), big.from_int(y)))
     Bigs(x, y) -> p.admit(Big(big.mul(x, y)))
-    Rats(x, y) -> p.admit(Rat(q.mul(x, y)))
+    Rats(x, y) -> carried(p, Rat(q.mul(x, y)))
     Reals(x, y) -> p.admit(Real(x * y))
 
 // `/`. A zero divisor is refused in every exact lane; in the float lane it is refused unless the
 // policy wants IEEE's infinities.
 private[dal] quotient(p: Policy, a: Number, b: Number) -> Result[Number, NumberError] = lane(p, a, b)? match
     Reals(x, y) -> if y == 0.0 && !p.ieee then Err(DivisionByZero) else p.admit(Real(x / y))
-    Rats(x, y) -> if y.is_zero() then Err(DivisionByZero) else p.admit(Rat(q.div(x, y)))
+    Rats(x, y) -> if y.is_zero() then Err(DivisionByZero) else carried(p, Rat(q.div(x, y)))
     Ints(x, y) -> if y == 0 then Err(DivisionByZero) else integers_divided(p, a, b, true)
     Bigs(x, y) -> if y.is_zero() then Err(DivisionByZero) else integers_divided(p, a, b, false)
 
@@ -128,7 +128,7 @@ private[dal] divided(p: Policy, a: Number, b: Number, floor: bool, remainder: bo
             val ratio = q.div(x, y)
             val qt = if floor then q.floor(ratio) else q.trunc(ratio)
 
-            if remainder then p.admit(Rat(q.sub(x, q.mul(y, q.from_big(qt))))) else p.admit(Big(qt))
+            if remainder then carried(p, Rat(q.sub(x, q.mul(y, q.from_big(qt))))) else p.admit(Big(qt))
         Reals(x, y) ->
             if y == 0.0 then return Err(DivisionByZero)
 
@@ -149,13 +149,13 @@ private[dal] negated(p: Policy, a: Number) -> Result[Number, NumberError] = a ma
         Some(n) -> Ok(Int(n))
         None -> grown(p, big.negate(big.from_int(v)))
     Big(v) -> p.admit(Big(big.negate(v)))
-    Rat(r) -> p.admit(Rat(q.negate(r)))
+    Rat(r) -> carried(p, Rat(q.negate(r)))
     Real(x) -> p.admit(Real(-x))
 
 private[dal] magnitude(p: Policy, a: Number) -> Result[Number, NumberError] = a match
     Int(v) -> if v < 0 then negated(p, a) else Ok(a)
     Big(v) -> p.admit(Big(big.abs(v)))
-    Rat(r) -> p.admit(Rat(q.abs(r)))
+    Rat(r) -> carried(p, Rat(q.abs(r)))
     Real(x) -> p.admit(Real(x.abs()))
 
 // The largest power this computes, in bits of the result: 2^26 bits is eight megabytes of digits,
@@ -208,9 +208,10 @@ private exact_power(p: Policy, base: Number, e: BigInt, small: bool) -> Result[N
     val up = big.pow(r.numerator(), usize(n))
     val down = big.pow(r.denominator(), usize(n))
 
-    if e.sign() < 0 then return p.admit(Rat(q.of(down, up)))
+    // A negative power of an integer is the one place a power makes a fraction out of integers.
+    if e.sign() < 0 then return if r.is_integer() then p.admit(Rat(q.of(down, up))) else carried(p, Rat(q.of(down, up)))
 
-    if !r.is_integer() then p.admit(Rat(q.of(up, down)))
+    if !r.is_integer() then carried(p, Rat(q.of(up, down)))
     elif small then grown(p, up)
     else p.admit(Big(up))
 end exact_power
@@ -224,11 +225,22 @@ private[dal] settled(p: Policy, n: Number) -> Result[Number, NumberError] = n ma
     Rat(r) ->
         if r.is_integer() && (p.demote || !p.rationals) then settled(p, Big(r.numerator()))
         elif !p.rationals then Err(NeedsRational)
-        elif !p.bigints && (!big.fits_long(r.numerator()) || !big.fits_long(r.denominator())) then Err(Overflow)
-        else Ok(n)
+        else fraction(p, n, r)
     Real(x) ->
         if !p.floats then Err(NeedsFloat)
         elif p.ieee then Ok(n)
         elif x.is_nan() then Err(Undefined)
         elif x.is_infinite() then Err(FloatOverflow)
         else Ok(n)
+
+// A result computed from a `Rat` operand. `rationals` off means no fraction is MADE out of integers,
+// not that a rational a host handed in is refused: arithmetic on one stays exact, as SWI-Prolog's
+// `1r2 + 1` is `3r2` with `prefer_rationals` off. Everything but a fraction is `settled` as usual.
+private carried(p: Policy, n: Number) -> Result[Number, NumberError] = n match
+    Rat(r) -> if p.rationals || r.is_integer() then settled(p, n) else fraction(p, n, r)
+    _ -> settled(p, n)
+
+// A fraction the policy keeps: a `Rat` whose parts must fit 64 bits when `bigints` is off.
+private fraction(p: Policy, n: Number, r: Rational) -> Result[Number, NumberError] =
+    if !p.bigints && (!big.fits_long(r.numerator()) || !big.fits_long(r.denominator())) then Err(Overflow)
+    else Ok(n)

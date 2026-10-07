@@ -568,6 +568,38 @@ rationals_off_refuses_a_fraction_and_keeps_a_whole_one()
     check(whole_only.of_rational(q.ratio(1, 2)), "error NeedsRational")
 
 @test
+rationals_off_keeps_arithmetic_on_a_rational_exact()
+    // `rationals` off makes no fraction out of integers; a `Rat` a host hands in is still a number,
+    // and arithmetic on it stays exact -- SWI-Prolog's `1r2 + 1` is `3r2` with `prefer_rationals` off.
+    val whole_only = policy(rationals = false)
+    val half = rat(1, 2)
+
+    check(whole_only.add(half, Int(1)), "Rat 3/2")
+    check(whole_only.add(Int(1), half), "Rat 3/2")
+    check(whole_only.sub(half, Int(1)), "Rat -1/2")
+    check(whole_only.mul(half, Int(3)), "Rat 3/2")
+    check(whole_only.div(half, Int(2)), "Rat 1/4")
+    check(whole_only.div(Int(1), half), "Int 2")
+    check(whole_only.neg(half), "Rat -1/2")
+    check(whole_only.abs(rat(-1, 2)), "Rat 1/2")
+    check(whole_only.pow(half, Int(2)), "Rat 1/4")
+    check(whole_only.pow(half, Int(-3)), "Int 8")
+    check(whole_only.pow(rat(2, 3), Int(-1)), "Rat 3/2")
+    check(whole_only.modulo(rat(7, 2), Int(2)), "Rat 3/2")
+
+    // A whole answer still demotes, and a double operand still makes a double.
+    check(whole_only.mul(half, Int(2)), "Int 1")
+    check(whole_only.add(half, Real(1.0)), "Real 1.5")
+
+    // The refusals are unchanged where the fraction is made out of integers.
+    check(whole_only.div(Int(1), Int(2)), "error NeedsRational")
+    check(whole_only.pow(Int(2), Int(-2)), "error NeedsRational")
+    check(whole_only.div(half, Int(0)), "error DivisionByZero")
+
+    // `bigints` off still bounds a carried fraction's parts.
+    check(policy(rationals = false, bigints = false).pow(half, Int(64)), "error Overflow")
+
+@test
 floats_off_refuses_a_double()
     val exact_only = policy(floats = false)
 
@@ -671,6 +703,12 @@ iso_prolog_without_rationals()
     check(iso.add(Int(1), Real(2.0)), "Real 3.0")
     check(iso.div(Real(1.0), Int(0)), "error DivisionByZero")
     check(iso.add(Int(max), Int(1)), "Big 9223372036854775808")
+
+    // A rational operand -- one another language made -- stays exact, as in SWI-Prolog.
+    check(iso.add(rat(1, 2), Int(1)), "Rat 3/2")
+    check(iso.div(rat(1, 2), Int(2)), "Rat 1/4")
+    check(iso.div(Int(1), Int(2)), "Real 0.5")
+    check(iso.quot(rat(7, 2), Int(2)), "error NotAnInteger")
 
 @test
 iso_prolog_with_prefer_rationals()

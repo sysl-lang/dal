@@ -33,7 +33,9 @@ enum Division
 struct Policy
     /** An integer past 64 bits becomes a `Big`; off, it is `Overflow`. */
     bigints: bool
-    /** A fraction becomes a `Rat`; off, it is `NeedsRational`. */
+    /** A fraction made out of integers becomes a `Rat`; off, it is `NeedsRational`. A `Rat` operand
+     * is never refused, so arithmetic on one stays exact either way.
+     */
     rationals: bool
     /** `Real`s exist; off, an operation that would make one is `NeedsFloat`. */
     floats: bool
@@ -109,8 +111,9 @@ policy(bigints: bool = true, rationals: bool = true, floats: bool = true, divisi
 /** FunL's tower, which is the defaults: exact until a program asks for inexactness. */
 funl() -> Policy = policy()
 
-/** ISO Prolog's tower. `prefer_rationals` is SWI-Prolog's flag: off, `7 / 2` is `3.5` and there are
- * no rationals; on, it is `7r2`. Either way the integer-division family wants integers.
+/** ISO Prolog's tower. `prefer_rationals` is SWI-Prolog's flag: off, `7 / 2` is `3.5` and integers
+ * make no rationals, though arithmetic on a rational another language made stays exact; on, `7 / 2`
+ * is `7r2`. Either way the integer-division family wants integers.
  */
 iso_prolog(prefer_rationals: bool) -> Policy
     val division = if prefer_rationals then Exact else IntOrFloat

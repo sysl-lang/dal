@@ -40,7 +40,7 @@ enum NumberError
         Overflow -> "integer overflow: the result does not fit 64 bits and big integers are off"
         FloatOverflow -> "float overflow: the result is infinite"
         Undefined -> "undefined: the result is not a number"
-        NeedsRational -> "the result is a fraction and rationals are off"
+        NeedsRational -> "the result is a fraction made out of integers and rationals are off"
         NeedsFloat -> "the result is a float and floats are off"
         MixedKinds -> "an exact number cannot meet a float under this policy"
         NotAnInteger -> "an integer was required"

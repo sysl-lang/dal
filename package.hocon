@@ -4,7 +4,7 @@
 // This is the block a consumer writes to reach it:
 //
 //     dependencies {
-//       dal { git = "github.com/sysl-lang/dal", version = "0.1.0" }
+//       dal { git = "github.com/sysl-lang/dal", version = "0.1.1" }
 //     }
 //
 // The coordinate names the package, `dal`; the module a program imports is `sh.sysl.dal`. It
@@ -13,7 +13,7 @@
 
 package {
   name    = "dal"
-  version = "0.1.0"
+  version = "0.1.1"
 
   // 0.1.0-alpha.2 is the first release whose `sysl.math.rational` this is built on: `checked_of`,
   // `from_real` and the exact `cmp_real` that cross-kind comparison rests on.

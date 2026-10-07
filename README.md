@@ -7,7 +7,7 @@ where a program asks for one -- with the rules that move a value between those k
 
 ```
 dependencies {
-  dal { git = "github.com/sysl-lang/dal", version = "0.1.0" }
+  dal { git = "github.com/sysl-lang/dal", version = "0.1.1" }
 }
 ```
 
@@ -164,7 +164,7 @@ policy(bigints = true, rationals = true, floats = true, division = Exact,
 | field | when on / what it picks | default |
 |---|---|---|
 | `bigints` | an integer past 64 bits becomes a `Big`; off, it is `Overflow` | on |
-| `rationals` | an inexact exact quotient becomes a `Rat`; off, it is `NeedsRational` | on |
+| `rationals` | a fraction made out of integers -- an inexact exact quotient, a negative power -- becomes a `Rat`; off, it is `NeedsRational`. A `Rat` *operand* is never refused: see below | on |
 | `floats` | `Real`s exist; off, any operation that would produce one is `NeedsFloat` | on |
 | `division` | what `/` gives for two integers -- see below | `Exact` |
 | `demote` | an exact result is demoted to the smallest exact kind that holds it; off, a `Big` stays a `Big` and a `Rat` a `Rat` (`Rat(1/1)`) -- though an operation on two `Int`s, an integer literal and a power of an `Int` still answer an `Int` wherever it fits, since nothing left a kind | on |
@@ -192,6 +192,12 @@ true quotient `12009599006321323.67` is nearer `12009599006321324.0`, which is w
 `rationals` off makes `7 / 2` a `NeedsRational` while `6 / 2` is still `Int(3)`. Nothing is checked
 when a policy is built, so a policy is a plain value a caller may write field by field.
 
+**`rationals` off means no fraction is *made*, not that a rational is refused.** A `Rat` that reaches
+an operation -- one a host language made under another policy and handed over -- is a number like
+any other, and arithmetic on it stays exact: `1/2 + 1` is `Rat(3/2)` and `1/2 / 2` is `Rat(1/4)`,
+while `1 / 2` still follows `division`. This is SWI-Prolog's rule (`1r2 + 1` is `3r2` with
+`prefer_rationals` off). `parse` and `of_rational` still refuse a fraction, since each makes one.
+
 ### What FunL chooses -- `funl()`
 
 The defaults, which is not an accident: FunL's design is the reason the defaults are what they are.
@@ -213,7 +219,8 @@ is not (`==`). Non-finite doubles are errors, and `%` works on reals (`integral`
 | `integral` | **on**: `//`, `mod`, `rem` and `div` are `type_error(integer, X)` on a float | on |
 
 `prefer_rationals` is SWI-Prolog's flag of the same name. With it off, a negative integer power of
-an integer other than `±1` is `NeedsRational` -- ISO's `type_error` for `2 ^ -1`. Prolog's `//` is
+an integer other than `±1` is `NeedsRational` -- ISO's `type_error` for `2 ^ -1` -- and a rational
+operand still computes exactly, as in SWI. Prolog's `//` is
 `quot` and its `div` is `floor_div`.
 
 **Mapping errors to ISO's**: `DivisionByZero` → `evaluation_error(zero_divisor)`, `FloatOverflow` →
@@ -235,7 +242,7 @@ enum NumberError
     Overflow          // an integer past 64 bits, with bigints off
     FloatOverflow     // an infinite double, with ieee off
     Undefined         // a NaN, with ieee off
-    NeedsRational     // a fraction, with rationals off
+    NeedsRational     // a fraction made out of integers, with rationals off
     NeedsFloat        // a double, with floats off
     MixedKinds        // an exact operand meeting a Real, with mixing off
     NotAnInteger      // integer division of a non-integer with integral on, or a fractional exponent
